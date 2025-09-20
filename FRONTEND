@@ -1,0 +1,153 @@
+FRONTEND
+import streamlit as st
+import plotly.express as px
+from datetime import date
+from backend_pms import (
+    get_db_connection, get_all_users, get_goals_for_user, get_tasks_for_goal,
+    create_goal, create_task, update_goal_status, approve_task,
+    create_feedback, get_feedback_for_goal, get_employee_performance_history
+)
+
+# --------------------
+# Frontend (Streamlit Dashboard)
+# --------------------
+
+st.set_page_config(layout="wide", page_title="Simple PMS")
+
+conn = get_db_connection()
+
+if conn:
+    st.sidebar.title("Login")
+    all_users_df = get_all_users(conn)
+    if all_users_df.empty:
+        st.warning("No users found. Please add users to your PostgreSQL database.")
+        st.stop()
+    
+    user_name = st.sidebar.selectbox("Select User", all_users_df['name'])
+    current_user_info = all_users_df[all_users_df['name'] == user_name].iloc[0]
+    current_user_id = current_user_info['user_id']
+    current_user_role = current_user_info['role']
+
+    st.title("Performance Management Dashboard")
+    st.write(f"Logged in as *{current_user_info['name']}* ({current_user_role})")
+
+    if current_user_role == 'manager':
+        st.header("Manager View")
+
+        st.subheader("1. Set a New Goal for an Employee")
+        employees = all_users_df[all_users_df['role'] == 'employee']
+        employee_to_assign = st.selectbox("Select an employee:", employees['name'])
+        employee_to_assign_id = employees[employees['name'] == employee_to_assign].iloc[0]['user_id']
+        with st.form("new_goal_form"):
+            goal_desc = st.text_area("Goal Description")
+            due_date = st.date_input("Due Date", date.today())
+            submitted = st.form_submit_button("Set Goal")
+            if submitted and goal_desc:
+                message = create_goal(conn, goal_desc, due_date, current_user_id, employee_to_assign_id)
+                st.success(message)
+
+        st.markdown("---")
+        st.subheader("2. Track Employee Progress & Give Feedback")
+        employee_to_view = st.selectbox("Select an employee to view progress:", employees['name'], key="view_employee")
+        employee_to_view_id = employees[employees['name'] == employee_to_view].iloc[0]['user_id']
+        employee_goals = get_goals_for_user(conn, employee_to_view_id)
+
+        if not employee_goals.empty:
+            for _, goal in employee_goals.iterrows():
+                with st.expander(f"*Goal:* {goal['goal_description']} (Status: {goal['status']})"):
+                    st.write(f"*Due Date:* {goal['due_date']}")
+                    st.markdown("*Tasks:*")
+                    tasks_df = get_tasks_for_goal(conn, goal['goal_id'])
+                    if not tasks_df.empty:
+                        for _, task in tasks_df.iterrows():
+                            task_status = "✅ Approved" if task['is_approved'] else "❌ Awaiting Approval"
+                            st.write(f"- {task['task_description']} ({task_status})")
+                            if not task['is_approved']:
+                                if st.button(f"Approve Task: {task['task_id']}", key=f"approve_{task['task_id']}"):
+                                    message = approve_task(conn, task['task_id'])
+                                    st.success(message)
+                                    st.experimental_rerun()
+                    else:
+                        st.write("No tasks logged yet.")
+
+                    st.markdown("*Provide Feedback:*")
+                    with st.form(f"feedback_form_{goal['goal_id']}"):
+                        feedback_text = st.text_area("Your Feedback")
+                        submitted_feedback = st.form_submit_button("Submit Feedback")
+                        if submitted_feedback and feedback_text:
+                            message = create_feedback(conn, goal['goal_id'], current_user_id, employee_to_view_id, feedback_text)
+                            st.success(message)
+
+                    st.markdown("*Goal Status Update:*")
+                    new_status = st.selectbox(
+                        "Change Status",
+                        ['Draft', 'In Progress', 'Completed', 'Cancelled'],
+                        index=['Draft', 'In Progress', 'Completed', 'Cancelled'].index(goal['status']),
+                        key=f"status_select_{goal['goal_id']}"
+                    )
+                    if st.button("Update Status", key=f"update_status_{goal['goal_id']}"):
+                        message = update_goal_status(conn, goal['goal_id'], new_status)
+                        st.success(message)
+                        st.experimental_rerun()
+
+                    st.markdown("*Feedback History:*")
+                    feedback_df = get_feedback_for_goal(conn, goal['goal_id'])
+                    if not feedback_df.empty:
+                        st.dataframe(feedback_df, use_container_width=True)
+                    else:
+                        st.write("No feedback for this goal yet.")
+        else:
+            st.write(f"No goals found for {employee_to_view}.")
+
+    elif current_user_role == 'employee':
+        st.header("Employee View")
+        st.subheader("My Goals")
+        my_goals_df = get_goals_for_user(conn, current_user_id)
+
+        if not my_goals_df.empty:
+            goals_by_status = my_goals_df['status'].value_counts()
+            fig = px.pie(
+                values=goals_by_status.values,
+                names=goals_by_status.index,
+                title="My Goals by Status"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            for _, goal in my_goals_df.iterrows():
+                with st.expander(f"*Goal:* {goal['goal_description']} (Status: {goal['status']})"):
+                    st.write(f"*Due Date:* {goal['due_date']}")
+                    st.markdown("*Tasks:*")
+                    tasks_df = get_tasks_for_goal(conn, goal['goal_id'])
+                    if not tasks_df.empty:
+                        for _, task in tasks_df.iterrows():
+                            task_status = "✅ Approved" if task['is_approved'] else "❌ Awaiting Approval"
+                            st.write(f"- {task['task_description']} ({task_status})")
+                    else:
+                        st.write("No tasks logged yet.")
+
+                    with st.form(f"task_form_{goal['goal_id']}"):
+                        task_desc = st.text_area("Log a new task to achieve this goal:")
+                        submitted_task = st.form_submit_button("Log Task")
+                        if submitted_task and task_desc:
+                            message = create_task(conn, task_desc, goal['goal_id'], current_user_id)
+                            st.success(message)
+                            st.experimental_rerun()
+
+                    st.markdown("*Feedback History:*")
+                    feedback_df = get_feedback_for_goal(conn, goal['goal_id'])
+                    if not feedback_df.empty:
+                        st.dataframe(feedback_df, use_container_width=True)
+                    else:
+                        st.write("No feedback for this goal yet.")
+        else:
+            st.write("You have no goals assigned yet.")
+
+        st.markdown("---")
+        st.subheader("Performance History Report")
+        history_df = get_employee_performance_history(conn, current_user_id)
+        if not history_df.empty:
+            st.dataframe(history_df, use_container_width=True)
+        else:
+            st.write("No performance history to display.")
+else:
+    st.error("Could not connect to the database. Please ensure PostgreSQL is running and your connection details are correct.")
