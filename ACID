@@ -1,0 +1,170 @@
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'pms' AND table_name = 'goals';
+-- pms_schema.sql
+-- Schema for Performance Management System (PMS)
+
+CREATE SCHEMA IF NOT EXISTS pms;
+SET search_path = pms, public;
+
+-- employees: managers and employees
+CREATE TABLE IF NOT EXISTS pms.employees (
+  employee_id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('manager','employee')),
+  email TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- goals: assigned by a manager to an employee
+CREATE TABLE IF NOT EXISTS pms.goals (
+  goal_id BIGSERIAL PRIMARY KEY,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  manager_id  BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE RESTRICT,
+  title TEXT NOT NULL,
+  description TEXT,
+  due_date DATE,
+  status TEXT NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft','In Progress','Completed','Cancelled')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_goals_employee ON pms.goals(employee_id);
+CREATE INDEX IF NOT EXISTS idx_goals_manager ON pms.goals(manager_id);
+CREATE INDEX IF NOT EXISTS idx_goals_due_date ON pms.goals(due_date);
+
+-- tasks: employee-proposed tasks for goals (approval flow)
+CREATE TABLE IF NOT EXISTS pms.tasks (
+  task_id BIGSERIAL PRIMARY KEY,
+  goal_id BIGINT NOT NULL REFERENCES pms.goals(goal_id) ON DELETE CASCADE,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  approved_by_manager BOOLEAN DEFAULT FALSE,
+  approved_at TIMESTAMP WITH TIME ZONE,
+  status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected','Done'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_goal ON pms.tasks(goal_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_employee ON pms.tasks(employee_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON pms.tasks(status);
+
+-- feedback: manager-written or automated feedback associated (optionally) with a goal
+CREATE TABLE IF NOT EXISTS pms.feedback (
+  feedback_id BIGSERIAL PRIMARY KEY,
+  manager_id BIGINT REFERENCES pms.employees(employee_id) ON DELETE SET NULL,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  goal_id BIGINT REFERENCES pms.goals(goal_id) ON DELETE SET NULL,
+  text TEXT NOT NULL,
+  automated BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  trigger TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_employee ON pms.feedback(employee_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_goal ON pms.feedback(goal_id);
+
+-- optional: view to get consolidated performance history per employee
+CREATE OR REPLACE VIEW pms.employee_performance_history AS
+SELECT
+  e.employee_id,
+  e.name as employee_name,
+  g.goal_id, g.title as goal_title, g.status as goal_status, g.due_date,
+  t.task_id, t.title as task_title, t.status as task_status,
+  f.feedback_id, f.text as feedback_text, f.automated as feedback_automated, f.created_at as feedback_at
+FROM pms.employees e
+LEFT JOIN pms.goals g ON g.employee_id = e.employee_id
+LEFT JOIN pms.tasks t ON t.goal_id = g.goal_id
+LEFT JOIN pms.feedback f ON f.employee_id = e.employee_id AND (f.goal_id IS NULL OR f.goal_id = g.goal_id);
+
+BEGIN;
+INSERT INTO pms.goals (title, description, assignee_id, manager_id, status, due_date)
+VALUES (...);
+COMMIT;
+
+INSERT INTO pms.goals (title, description, assignee_id, manager_id, status, due_date)
+VALUES (
+    'Increase Sales Q3',
+    'Improve sales pipeline efficiency by 20%',
+    'uuid-of-employee',    -- replace with actual UUID of assignee
+    'uuid-of-manager',     -- replace with actual UUID of manager
+    'Draft',
+    '2025-12-31'
+);
+
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'pms' AND table_name = 'goals';
+
+BEGIN;
+INSERT INTO feedback (goal_id, author_id, content, feedback_type) VALUES (..., 'Manual');
+COMMIT;
+
+-- Get UUIDs of seeded users
+-- Alice Manager (manager) and Bob Employee (employee)
+SELECT id, full_name FROM pms.users;
+INSERT INTO pms.goals (
+    id, title, description, assignee_id, manager_id, status, due_date
+) VALUES (
+    uuid_generate_v4(),
+    'Increase Sales Q3',
+    'Improve sales pipeline efficiency by 20%',
+    '11111111-1111-1111-1111-111111111111',  -- Bob Employee
+    '22222222-2222-2222-2222-222222222222',  -- Alice Manager
+    'Draft',
+    '2025-12-31'
+);
+INSERT INTO pms.tasks (
+    id, goal_id, owner_id, description, planned_date, status
+) VALUES (
+    uuid_generate_v4(),
+    '33333333-3333-3333-3333-333333333333',
+    '11111111-1111-1111-1111-111111111111',  -- Bob Employee
+    'Contact 10 clients this week',
+    '2025-09-22',
+    'Planned'
+);
+INSERT INTO pms.feedback (
+    id, goal_id, author_id, content, feedback_type
+) VALUES (
+    uuid_generate_v4(),
+    '33333333-3333-3333-3333-333333333333',  -- goal ID
+    '22222222-2222-2222-2222-222222222222',  -- Alice Manager
+    'Great progress on milestone 1!',
+    'Manual'
+);
+
+CREATE SCHEMA IF NOT EXISTS pms;
+
+-- Roles
+CREATE TABLE IF NOT EXISTS pms.roles (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL UNIQUE
+);
+
+-- Users
+CREATE TABLE IF NOT EXISTS pms.users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    full_name VARCHAR(200) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    role_id INT NOT NULL REFERENCES pms.roles(id),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+SELECT table_schema, table_name
+FROM information_schema.tables
+WHERE table_schema = 'pms';
+
+SET search_path = pms, public;
+
+SELECT id, full_name FROM users;
+
+
+
+
+
