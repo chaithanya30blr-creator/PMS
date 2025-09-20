@@ -1,0 +1,76 @@
+-- pms_schema.sql
+-- Schema for Performance Management System (PMS)
+
+CREATE SCHEMA IF NOT EXISTS pms;
+SET search_path = pms, public;
+
+-- employees: managers and employees
+CREATE TABLE IF NOT EXISTS pms.employees (
+  employee_id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('manager','employee')),
+  email TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- goals: assigned by a manager to an employee
+CREATE TABLE IF NOT EXISTS pms.goals (
+  goal_id BIGSERIAL PRIMARY KEY,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  manager_id  BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE RESTRICT,
+  title TEXT NOT NULL,
+  description TEXT,
+  due_date DATE,
+  status TEXT NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft','In Progress','Completed','Cancelled')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_goals_employee ON pms.goals(employee_id);
+CREATE INDEX IF NOT EXISTS idx_goals_manager ON pms.goals(manager_id);
+CREATE INDEX IF NOT EXISTS idx_goals_due_date ON pms.goals(due_date);
+
+-- tasks: employee-proposed tasks for goals (approval flow)
+CREATE TABLE IF NOT EXISTS pms.tasks (
+  task_id BIGSERIAL PRIMARY KEY,
+  goal_id BIGINT NOT NULL REFERENCES pms.goals(goal_id) ON DELETE CASCADE,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  approved_by_manager BOOLEAN DEFAULT FALSE,
+  approved_at TIMESTAMP WITH TIME ZONE,
+  status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected','Done'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_goal ON pms.tasks(goal_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_employee ON pms.tasks(employee_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON pms.tasks(status);
+
+-- feedback: manager-written or automated feedback associated (optionally) with a goal
+CREATE TABLE IF NOT EXISTS pms.feedback (
+  feedback_id BIGSERIAL PRIMARY KEY,
+  manager_id BIGINT REFERENCES pms.employees(employee_id) ON DELETE SET NULL,
+  employee_id BIGINT NOT NULL REFERENCES pms.employees(employee_id) ON DELETE CASCADE,
+  goal_id BIGINT REFERENCES pms.goals(goal_id) ON DELETE SET NULL,
+  text TEXT NOT NULL,
+  automated BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  trigger TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_employee ON pms.feedback(employee_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_goal ON pms.feedback(goal_id);
+
+-- optional: view to get consolidated performance history per employee
+CREATE OR REPLACE VIEW pms.employee_performance_history AS
+SELECT
+  e.employee_id,
+  e.name as employee_name,
+  g.goal_id, g.title as goal_title, g.status as goal_status, g.due_date,
+  t.task_id, t.title as task_title, t.status as task_status,
+  f.feedback_id, f.text as feedback_text, f.automated as feedback_automated, f.created_at as feedback_at
+FROM pms.employees e
+LEFT JOIN pms.goals g ON g.employee_id = e.employee_id
+LEFT JOIN pms.tasks t ON t.goal_id = g.goal_id
+LEFT JOIN pms.feedback f ON f.employee_id = e.employee_id AND (f.goal_id IS NULL OR f.goal_id = g.goal_id);
